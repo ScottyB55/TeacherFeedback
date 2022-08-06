@@ -181,7 +181,10 @@
 		            //get the target file name that it will be uploaded to
 		            //create a unique file name in the uploads directory
 		            $fileName=tempnam('Uploads', 'img');//'Uploads/testImage.png';
-		            echo '<p>Echo:'.$fileName.'</p><br><br>';
+			    if (!is_writable('Uploads')){
+			    	echo '<p>Echo: Uploads is not writable. tempnam() generated file name: '.
+					$fileName.'. Try Linux Command: sudo chmod 777 Uploads</p>';
+			    }
 		            //see if we got a file name
 		            if($fileName!==false){
 		                //delete the text file

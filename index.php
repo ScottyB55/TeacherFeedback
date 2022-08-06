@@ -181,7 +181,7 @@
 		            //get the target file name that it will be uploaded to
 		            //create a unique file name in the uploads directory
 		            $fileName=tempnam('Uploads', 'img');//'Uploads/testImage.png';
-		            // echo '<p>Echo:'.$fileName.'</p><br><br>';
+		            echo '<p>Echo:'.$fileName.'</p><br><br>';
 		            //see if we got a file name
 		            if($fileName!==false){
 		                //delete the text file

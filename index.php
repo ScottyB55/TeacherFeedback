@@ -35,7 +35,7 @@
             SchoolID int NOT NULL AUTO_INCREMENT,
             Name varchar(50),
             PRIMARY KEY (SchoolID)
-        )");
+        )");*/
         sqlExecute("
 	        CREATE TABLE Teachers (
             TeacherID int NOT NULL AUTO_INCREMENT,
@@ -76,7 +76,7 @@
         // Fixed: missing the Caption column for the Image tables! varchar(1000) works good, as well as default null!
         // Make an uploads file too
         // We can troubleshoot the PHP by echoing, period concatenates strings!
-        */
+        
         /*
         Goals:
             +Don't let the typical users delete information already posted

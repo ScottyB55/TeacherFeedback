@@ -1,0 +1,52 @@
+/* this controls the master css for everything, don't mess with it too much */
+* {
+	font-family: "Comic Sans MS";
+	font-size: 15;
+}
+
+/* BUTTON: Class which controls properties/events of buttons */
+.button {
+	padding: 16px;
+	color: white;
+	background-color: #556677;
+	text-align: center;
+	text-decoration: none;
+	display: inline-block;
+	margin: auto;
+}
+.button:hover, .button:active {
+	/* button becomes dark blue when active/hovered */
+	background-color: #003F7F;
+}
+
+/* styles the table that allows people to navigate the database */
+.dataTable {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.dataTable td, .dataTable th {
+    border: 1px solid #ddd;
+    padding: 8px;
+    white-space: pre-wrap;
+}
+
+.dataTable tr:nth-child(even){background-color: #eee;}
+
+.dataTable tr:hover {background-color: #ddd;}
+
+.dataTable th {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    text-align: left;
+    background-color: #4CAF50;
+    color: white;
+}
+
+.dataTable textarea {
+    width: 100%;
+}
+
+.dataTable img {
+    height: 200px;
+}

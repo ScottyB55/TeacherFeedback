@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html>
+	<head>
+	</head>
+	<body>
+		<canvas id="myCanvas" style="border: none;"></canvas>
+		<button onclick="incBrightness(0.5)">+</button>
+		<button onclick="incBrightness(-0.5)">-</button>
+		<p>Click on the screen to explore! The mouse looks around and use awsd keys to move around. Space means up and shift means down.</p>
+		<p>I coded this 3D viewer in JavaScript for fun! To convert 3D to 2D, the program "casts out" lines at various angles, representing pixels, and checks where the lines intercept squares in the 3D map. I enjoy reasoning through physics and engineering problems such as 3D to 2D conversion!</p>
+		<p>Below is the number of iterations required to render the image! There are lots of cool tricks to reduce the number of iterations to find the intercetion points!</p>
+		<p id="testParagraph"></p>
+		<p>- Scott Burnett</p>
+		<a href="index.php" target="_blank">Check out another cool website!</a>
+		<script>
+			/*
+			vision is represented by many viewpoints origionating from a point
+			the viewpoints are equally spaced out and are represented by a vertical angle(from +z axis) and a horizontal angle(from +x axis)
+			when a viewpoints hits an object, its corresponding pixel is colored depending on its distance from the light source and angle from the light source
+			to look up or down, rotate the viewpoints about the x axis
+			to look left or right, rotate the viewpoints about the z axis
+			
+			Goals:
+			+get a better sorting algorithm(for nearly sorted arrays)- this helped speed up the sorting, but sorting isn't the main processing sink for moderately sized boards
+			group planes into cubes
+			test more points on the plane(corners) to ensure that all planes in the view get displayed
+			+work on the edges of planes(there are gaps between some planes), likely due to the hIndex being slightly off rounded
+			+solve the mouse look angle problem(mouse randomly shoots to an angle)
+			eventually, let each cube have a reference to a defined color or pattern to save memory
+			do something for objects that get blocked that shouldn't
+			improve the process of rejecting planes that have no chance of being displayed or are covered by other planes
+			get a way to rotate objects
+			store the arccos in an array to speed up calculations
+			ensure precision in trig arrays so that small faraway objects near zeroes(center of view, look far up and down) aren't left out
+			divide the map into an array holding sections by x, y so only the sections possible in the view will be loaded and sorted*/
+			
+			//set the precision of the trig functions saved into an array to improve efficiency
+			var trigPrecision=256;
+			//this is the maximum distance squared from the origin that a plane must be to be considered for display
+			var maxDistance=10000;
+			
+			//set the horizontal and vertical degrees of vision that the viewer sees at a time
+			var hDegrees=90;
+			var vDegrees=60;
+			//set the degrees between viewpoints
+			var degreeIncrement=0.25;
+			//set the conversion between an angle and its corresponding trig index
+			//multiply an angle by toTrigs to get its index
+			//divide an index by toTrigs to get its angle
+			var toTrigs=trigPrecision/degreeIncrement;
+			
+			//set the mouse sensitivity, or how much the viewAngle changes for each unit of mouse movement
+			var mouseSensitivity=0.25;
+			//set the movement sensitivity, or how far you can move each frame
+			var speedSensitivity=0.25;
+			//set the light constant(higher values mean light goes farther)
+			var kLight=8.0;
+			//set the starting horizontal and vertical degree center of view
+			var hViewAngle=250.0;//0 to 360
+			var vViewAngle=-30.0;//-90 to 90
+			//get the index of the vertical view angle(from moving mouse up and down)
+			var vViewIndex=Math.round(((vViewAngle+360)%360)*toTrigs);
+			var hViewIndex=Math.round(hViewAngle*toTrigs);
+			
+			//set the starting viewer's position in x, y, and z
+			var positions=[0.5, 0.0, 0.0];
+			
+			//holds the number of iterations for testing and improving efficiency
+			var iterations;
+			var iterations2;
+			var displayText="";
+			
+			//declare functions to be called when a key is pressed or released
+			document.onkeydown=keyDown;
+			document.onkeyup=keyUp;
+			
+			//keysDown holds information about the relevant keys that are currently pressed
+			//keysDown=0 -> released, keysDown=1 -> pressed
+			var keysDown=[0,0,0,0,0,0];//left(37), up(38), right(39), down(40), space(32), shift(16)
+			
+			//set up the canvas to display the viewer and get its pixel information
+			var canvas = document.getElementById("myCanvas");					//create a canvas object
+			canvas.width=Math.ceil(hDegrees/degreeIncrement);					//set the width and height of the canvas
+			canvas.height=Math.ceil(vDegrees/degreeIncrement);
+			var ctx = canvas.getContext("2d");									//get the canvas data
+			ctx.fillStyle = "white";											//put a white rectangle that takes up the entire canvas
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+			var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);//read the pixel data
+			var pixelData=imageData.data;										//get the pixel data in an array
+			
+			//set up the pointer lock
+			canvas.requestPointerLock = canvas.requestPointerLock ||
+										canvas.mozRequestPointerLock;
+			document.exitPointerLock = document.exitPointerLock ||
+									   document.mozExitPointerLock;
+			canvas.onclick = function() {
+				canvas.requestPointerLock();
+			};
+			//pointer lock event listeners
+			document.addEventListener('pointerlockchange', lockChangeAlert, false);
+			document.addEventListener('mozpointerlockchange', lockChangeAlert, false);
+			function lockChangeAlert(){
+				if (document.pointerLockElement === canvas || document.mozPointerLockElement === canvas){
+					document.addEventListener("mousemove", updatePosition, false);
+				}
+				else{
+					document.removeEventListener("mousemove", updatePosition, false);
+				}
+			}
+			//handles when you look around with the mouse 
+			function updatePosition(e) {
+				//update the vertical viewAngle from the y mouse movement
+				vViewAngle=vViewAngle-e.movementY*mouseSensitivity;
+				//cap the viewAngles to avoid mathematical zeroes at the poles
+				if(vViewAngle<-85.0){
+					vViewAngle=-85.0;
+				}
+				else if(vViewAngle>85.0){
+					vViewAngle=85.0;
+				}
+				//update the horizontal viewAngle from the x mouse movement
+				hViewAngle=(hViewAngle+e.movementX*mouseSensitivity+36000)%360;
+				
+				//get the index of the vertical view angle(from moving mouse up and down)
+				vViewIndex=Math.round(((vViewAngle+360)%360)*toTrigs);
+				hViewIndex=Math.round(hViewAngle*toTrigs);
+			}
+			
+			//save the trig functions in an array to make calculations much faster
+			var trigs=[];
+			//hold the current index of trigs
+			var setupIndex=0;
+			//set the range from 0 to 2PI so trigs will hold trig functions from 0 to 360 degrees
+			var radianMax=Math.PI*2;
+			//increment by the degree increment times a constant specified by toTrigs
+			var radianIncrement=toRadian(1.0/toTrigs);
+			//save each trig value in an array
+			for(var a=0; a<radianMax; a+=radianIncrement){
+				//trigs holds the cos, sin, acos, and asin of each angle
+				//the setupIndex of an angle is Math.round(angle*toTrigs)
+				trigs[setupIndex]=[Math.cos(a),Math.sin(a)];
+				setupIndex++;
+			}
+			
+			//save the start and end angles of the viewpoints before rotation
+			//the viewpoint is centered around hAngle=180 and vAngle=90 (-x axis)
+			var hAngleStart=180.0-hDegrees/2;
+			var hAngleEnd=180.0+hDegrees/2;
+			var vAngleStart=90.0-vDegrees/2;
+			var vAngleEnd=90.0+vDegrees/2;
+			
+			//save the index of trigs where the vertical and horizontal angles will start and end
+			var vIndexStart=Math.round(vAngleStart*toTrigs);
+			var vIndexEnd=Math.round(vAngleEnd*toTrigs);
+			var hIndexStart=Math.round(hAngleStart*toTrigs);
+			var hIndexEnd=Math.round(hAngleEnd*toTrigs);
+			
+			//save the each of the viewpoints grouped by the horizontal row(specified by the vIndex) in viewpointsAvailable
+			//the length of viewpointsAvailable gives the number of viewpoints in a horizontal row
+			//each horizontal row starts with hAngleStart and ends with hAngleEnd
+			var viewpointsAvailable=[];
+			setupIndex=0;
+			//cycle through the vertical indexes of angles that will be displayed
+			for(var i=vIndexStart; i<=vIndexEnd; i+=trigPrecision){
+				//calculate how much the horizontal angle is incremented in this row
+				var incHAngle=1.0/trigs[i][1]*degreeIncrement;
+				//calculate the number of viewpoints in the row, and make sure this number is even to ensure symmetry
+				var numViewpoints=2*Math.round(hDegrees/incHAngle/2);
+				//create a new row in the available viewpoints
+				viewpointsAvailable[setupIndex]=[];
+				//for each viewpoint, set it available
+				for(var j=0; j<numViewpoints; j++){
+					viewpointsAvailable[setupIndex][j]=true;
+				}
+				setupIndex++;
+			}
+			
+			var red=[255,0,0];
+			var darkRed=[128,0,0];
+			
+			var green=[0,255,0];
+			var darkGreen=[0,128,0];
+			
+			var blue=[0,0,255];
+			var darkBlue=[0,0,128];
+			
+			var white=[255,255,255];
+			var grey=[128,128,128];
+			
+			var teal=[0,255,255];
+			var purple=[255,0,255];
+			var yellow=[255,255,0];
+			
+			//define an array of planes, each as a set of 2 points(diagonal across plane) and color(rgb)
+			var mapPlanes=[
+			[[10,2,-2],[10,1,-1],blue],
+			[[10,1,-2],[11,1,-1],teal],
+			[[10,2,-2],[11,2,-1],purple],
+			[[11,2,-1],[10,1,-1],yellow],
+			[[11,1,-1],[11,2,-2],white],
+			
+			[[0,2,-2],[0,1,-1],blue],
+			[[0,1,-2],[1,1,-1],teal],
+			[[0,2,-2],[1,2,-1],purple],
+			[[1,2,-1],[0,1,-1],yellow],
+			[[1,1,-1],[1,2,-2],white],
+			];
+			
+			//generate a a floor of planes
+			//currently must be odd for color alternation
+			/*var planeWidth=1;
+			var zP=-2;
+			for(var x=-20; x<20; x++){
+				for(y=-20; y<20; y++){
+					var xP=x*planeWidth;
+					var yP=y*planeWidth;
+					if((x+y)%2==0){
+						mapPlanes.push([[xP, yP, zP],[xP+planeWidth, yP+planeWidth, zP],[255,0,0]]);
+					}
+					else{
+						mapPlanes.push([[xP, yP, zP],[xP+planeWidth, yP+planeWidth, zP],[0,255,0]]);
+					}
+				}
+			}*/
+			
+			//add the floor planes
+			addPlanes([[-20,20],[-20,20],[-2,-2]], green, darkGreen);
+			
+			//add the wall planes around the door
+			addPlanes([[-5,0],[5,5],[-2,2]], red, darkRed);
+			addPlanes([[1,5],[5,5],[-2,2]], red, darkRed);
+			addPlanes([[0,1],[5,5],[0,2]], red, darkRed);
+			
+			addPlanes([[-5,5],[-5,-5],[-2,2]], red, darkRed);
+			
+			addPlanes([[5,5],[-5,5],[-2,2]], red, darkRed);
+			addPlanes([[-5,-5],[-5,5],[-2,2]], red, darkRed);
+			
+			addPlanes([[-5,5],[-5,5],[2,2]], white, grey);
+			
+			//create an array of the instances of the mapPlanes array
+			//sortedPlanes holds the index of the plane in mapPlanes it points to, its distance squared from the origin, and its shifted position after the position of the viewer is taken into account
+			//sortedPlanes is then sorted based on the distances from the origin
+			var sortedPlanes=[];
+			for(var i=0; i<mapPlanes.length; i++){
+				sortedPlanes[i]=[i,0.0,[0.0,0.0,0.0]];
+			}
+			//calculate the x, y, z, and distance for each plane
+			updatePlanes();
+			//for the initial sort, use the javascript merge sort since this is good for unsorted arrays
+			sortedPlanes=sortedPlanes.sort(planesComparator);
+			
+			//animation setup:
+			//define the speed of the box
+			var velocity=[0.2, 0.1];
+			//define the x and y range that the first plane can go in
+			var boxRange=[[-20.001, 19.001],[-19.001, 20.001]];
+			
+			//set up the frame rate by delay between frames(ms)
+			var id=setInterval(frame, 50);
+			
+			//this function executes each frame
+			function frame() {
+				//animations:
+				//hViewAngle=(hViewAngle+mouseSensitivity)%360;
+				//get the index of the vertical view angle(from moving mouse up and down)
+				//hViewIndex=Math.floor(hViewAngle*toTrigs+0.5);
+				//animations
+				for(var i=0; i<2; i++){
+					var nextVar=mapPlanes[0][0][i]+velocity[i];
+					//document.getElementById("testParagraph3").innerHTML="xNext: ".concat(xNext);
+					if((nextVar<boxRange[i][0])||(nextVar>boxRange[i][1])){
+						velocity[i]=-velocity[i];
+					}
+					for(var j=0; j<5; j++){
+						mapPlanes[j][0][i]+=velocity[i];
+						mapPlanes[j][1][i]+=velocity[i];
+					}
+				}
+				
+				//find the sines and cosines of the horizontal view angle
+				//this allows the position to be updated depending on where you are looking horizontally
+				var radHViewAngle=toRadian(hViewAngle);
+				var cosHViewAngle=Math.cos(radHViewAngle);
+				var sinHViewAngle=Math.sin(radHViewAngle);
+				
+				//find the change in position in the three directions
+				//var keysDown=[0,0,0,0,0,0]; left(37), up(38), right(39), down(40), space(32), shift(16)
+				var changeRL=keysDown[2]-keysDown[0];
+				var changeDU=keysDown[1]-keysDown[3];
+				var changeSS=keysDown[5]-keysDown[4];
+				
+				//convert the change in three directions to change in x, y, and z
+				positions[0]+=(changeDU*cosHViewAngle-changeRL*sinHViewAngle)*speedSensitivity;
+				positions[1]+=(changeDU*sinHViewAngle+changeRL*cosHViewAngle)*speedSensitivity;
+				positions[2]+=(changeSS)*speedSensitivity;
+				
+				//calculate the x, y, z, and distance for each plane
+				updatePlanes();
+				
+				//sort the planes by distance(closest first)
+				//this allows the close planes to have priority over the planes far away
+				//use insertion sort since the array is nearly sorted
+				var sortedLength=sortedPlanes.length;
+				for(var i=0; i<sortedLength; i++){
+					var temp=sortedPlanes[i];
+					var j=i-1;
+					while(j>=0&&(sortedPlanes[j][1]>temp[1])){
+						sortedPlanes[j+1]=sortedPlanes[j];
+						j--;
+					}
+					sortedPlanes[j+1]=temp;
+				}
+				
+				//go row by row(vertical angle) and plane by plane, and update the image data
+				displayAll();
+			}
+			
+			//define the math functions for the three different types of planes(common x, common y, common z)
+			//trigs[trigsIndex]=[Math.cos(a),Math.sin(a)];			
+			//reflection coefficient=viewCoefficients[common](vIndex, hIndex, vRotation, hRotation)
+			//return the light reflection coefficient along the viewpoint based on the angle from the light source(origin)
+			//this coefficient can be used for all plane calculations, including distance and angle
+			var viewCoefficients=[
+			//common X -> (sin(v)*cos(h)*cos(A)+cos(v)*sin(A))*cos(B)-sin(v)*sin(h)*sin(B)
+			function(vIndex, hIndex, vRotation, hRotation){
+				return (trigs[vIndex][1]*trigs[hIndex][0]*trigs[vRotation][0]+trigs[vIndex][0]*trigs[vRotation][1])*trigs[hRotation][0]-trigs[vIndex][1]*trigs[hIndex][1]*trigs[hRotation][1];
+			},
+			//common Y -> (sin(v)*cos(h)*cos(A)+cos(v)*sin(A))*sin(B)+sin(v)*sin(h)*cos(B)
+			function(vIndex, hIndex, vRotation, hRotation){
+				return (trigs[vIndex][1]*trigs[hIndex][0]*trigs[vRotation][0]+trigs[vIndex][0]*trigs[vRotation][1])*trigs[hRotation][1]+trigs[vIndex][1]*trigs[hIndex][1]*trigs[hRotation][0];
+			},
+			//common Z -> -sin(v)*cos(h)*sin(A)+cos(v)*cos(A)
+			function(vIndex, hIndex, vRotation, hRotation){
+				return -trigs[vIndex][1]*trigs[hIndex][0]*trigs[vRotation][1]+trigs[vIndex][0]*trigs[vRotation][0];
+			}];
+			
+			//returns the cosine of the rotated vertical or horizontal reference angles to the point
+			//x, y, z is coordinates of point; p is distance to point
+			//v, h are the reference vertical and horizontal angle indexes
+			//a is the rotated vertical angle index
+			var angleFunctions=[
+			//returns cosine of rotated vertical reference angle ->
+			//(xsinVcosH+ysinVsinH+zcosV)/p
+			function(x, y, z, p, v, h, a){
+				return (x*trigs[v][1]*trigs[h][0]+y*trigs[v][1]*trigs[h][1]+z*trigs[v][0])/p;
+			},
+			//returns cosine of rotated horizontal reference angle ->
+			//(xcosH+ysinH-psinVcosA)/(pcosVsinA)
+			function(x, y, z, p, v, h, a){
+				return (x*trigs[h][0]+y*trigs[h][1]-p*trigs[v][1]*trigs[a][0])/p/trigs[v][0]/trigs[a][1];
+			}];
+			
+			//functions to convert between radians and degrees
+			function toRadian(degree){
+				return degree*Math.PI/180.0;
+			}
+			function toDegree(radian){
+				return radian*180.0/Math.PI;
+			}
+			
+			//displays a single viewpoint based on the reference vIndex, reference rowIndex, pixel lighting, and color
+			function display(vIndexRef, indexInRow, lighting, colorRGB){
+				//the offset on the display equals half the canvas width minus half the total horizontal length displayed in the row
+				var leftOffset=Math.round((canvas.width-viewpointsAvailable[vIndexRef].length)/2);
+				//the canvas index is 4 times(the pixel index since there is r, g, b, and another field for each pixel
+				var k=4*(vIndexRef*canvas.width+leftOffset+indexInRow);
+				//convert the shade decimal into a byte
+				var shade=lighting;
+				//make sure shade is positive
+				if(shade<0.0){
+					shade=-shade;
+				}
+				//cap the shade at the maximum brightness
+				if(shade>1.0){
+					shade=1.0;
+				}
+				//write the pixel rgb to the shade
+				pixelData[k]  =Math.round(shade*colorRGB[0]);// red
+				pixelData[k+1]=Math.round(shade*colorRGB[1]);// green
+				pixelData[k+2]=Math.round(shade*colorRGB[2]);// blue
+			}
+			
+			//returns the minimum of two variables
+			function min(v1, v2){
+				if(v1<v2){
+					return v1;
+				}
+				return v2;
+			}
+			//returns the maximum of two variables
+			function max(v1, v2){
+				if(v1>v2){
+					return v1;
+				}
+				return v2;
+			}
+			//returns whether the variable is between rangeMin and rangeMax and rangeMin<rangeMax
+			function inRange(v1, rangeMin, rangeMax){
+				return (v1>=(rangeMin))&&(v1<=(rangeMax));
+			}
+			
+			function displayAll(){
+				//reset troubleshooting variables
+				iterations=0;
+				//iterations2=0;
+				displayText="";
+				//display information about the current frame
+				//displayText=displayText.concat(positions[0], ", ", positions[1], ", ", positions[2], ", ", vViewAngle, ", ", hViewAngle);
+				
+				//clear the frame with a black background, reset the viewpointsAvailable array
+				for(var v=0; v<viewpointsAvailable.length; v++){
+					for(var h=0; h<viewpointsAvailable[v].length; h++){
+						viewpointsAvailable[v][h]=true;	//clear all of the viewpoints(reset to un-obstructed)
+						display(v, h, 0.0, [0, 0, 0]);	//display a black background
+					}
+				}
+				
+				//cycle through the planes from closest to farthest away while the distance squared is less than the max distance acceptable
+				for(var planeIndex=0; (planeIndex<sortedPlanes.length)&&(sortedPlanes[planeIndex][1]<maxDistance); planeIndex++){
+					//get a copy of the referenced plane and shift it over to the position of the viewer
+					var plane=copyPlane(mapPlanes[sortedPlanes[planeIndex][0]]);
+					for(var i=0; i<positions.length; i++){
+						plane[0][i]+=positions[i];
+						plane[1][i]+=positions[i];
+					}
+					//holds the plane's common axis variable(0 for x, 1 for y, 2 for z)
+					var commonVar=0;
+					//holds an 2D array for each of the plane's two noncommon variables. Each array holds [axis, min, max]
+					var nonCommonVars=[];
+					//holds the index of the nonCommonInfo
+					var ncVarIndex=0;
+					//test out each variable to see if it is the common variable, and fill in the nonCommonVars array and axis variable
+					//0->x, 1->y, 2->z
+					for(var axis=0; axis<3; axis++){
+						//if this is the common variable, save the axis
+						if(plane[0][axis]==plane[1][axis]){
+							commonVar=axis;
+						}
+						//if it isn't the common variable, finds its min and max and save this in the noncommon array
+						else{
+							//save the axis and range of the noncommon variable
+							nonCommonVars[ncVarIndex]=[axis, min(plane[0][axis], plane[1][axis]), max(plane[0][axis], plane[1][axis])];
+							ncVarIndex++;
+						}
+					}
+					
+					//if there is only one common variable(plane is valid), then find the distance to a point on the plane and thetas that hit the plane
+					//then, test surrounding points and plot them on the display
+					if(ncVarIndex==2){
+						//find the center x, y, and z coordinates of the plane
+						var x=sortedPlanes[planeIndex][2][0];
+						var y=sortedPlanes[planeIndex][2][1];
+						var z=sortedPlanes[planeIndex][2][2];
+						//find the distance from the viewer to the center of the plane
+						var p=Math.sqrt(sortedPlanes[planeIndex][1]);
+						
+						//find the vertical and horizontal reference angles to the point in degrees
+						var referenceIndexes=[0,0];
+						
+						//find the vertical(0) then horizontal(1) reference angles
+						for(var i=0; i<2; i++){
+							//get the cosine of the angle
+							var angle1=angleFunctions[i](x, y, z, p, vViewIndex, hViewIndex, referenceIndexes[0]);
+							//round down to +-1 if needed before taking the arccos due to rounding errors
+							if(angle1>1.0){
+								angle1=1.0;
+							}
+							else if(angle1<-1.0){
+								angle1=-1.0;
+							}
+							//get the angle in degrees
+							angle1=toDegree(Math.acos(angle1));
+							//toTrigs=trigPrecision/degreeIncrement
+							//get the angle index for future calculations
+							referenceIndexes[i]=Math.round(angle1*toTrigs);
+						}
+						
+						//once you find a set of angles to a point in the plane, calculate everyting for its entire row
+						//extend outwards until hIndex is out of range (you miss the plane and go out of the previous bounds)
+						//then, increment/decrement the vertical angle, and start the horizontal angle at the center of the previous range.
+						//The possible rows that may hit the plane are the range of the previous row, plus any around the outside of the range
+						
+						//start the horizontal angle at the center of the previous range
+						//extend outward in one direction while within the valid hIndex range and (within the previous bound or it hits)
+						//returns the last hIndex(rounded) that hits, if none hit return false
+						//if direction is +1, increment hIndex, if -1, decrement hIndex
+						//function displayPortion(vIndex, hIndexBegin, hIndexBound, direction, plane, commonVar, nonCommonVars){
+						
+						//make sure the center point is on the display(shift the hAngle and vAngle if needed)
+						//put it slightly off the edge to ensure that it is greater than the first, less that last horizontal angle
+						if(referenceIndexes[1]<hIndexStart){
+							referenceIndexes[1]=hIndexStart+trigPrecision;
+						}
+						else if(referenceIndexes[1]>hIndexEnd){
+							referenceIndexes[1]=hIndexEnd-trigPrecision;
+						}
+						if(referenceIndexes[0]<vIndexStart){
+							referenceIndexes[0]=vIndexStart+trigPrecision;
+						}
+						else if(referenceIndexes[0]>vIndexEnd){
+							referenceIndexes[0]=vIndexEnd-trigPrecision;
+						}
+						
+						//round the reference indexes
+						//referenceIndexes[0]=trigPrecision*Math.round(referenceIndexes[0]/trigPrecision);
+						//referenceIndexes[1]=trigPrecision*Math.round(referenceIndexes[1]/trigPrecision);
+						
+						//test both solutions to the horizontal angle since the arccos domain is 180, but the needed domain is 360
+						//save the horizontal index
+						var hIndex=referenceIndexes[1];
+						//cycle through the possible horizontal angle solutions
+						for(var j=0; j<2; j++){
+							//try the other solution if the first fails
+							if(j){
+								hIndex=hIndex=Math.round(360*toTrigs-hIndex);//trigPrecision*Math.round((360*toTrigs-hIndex)/trigPrecision);//
+							}
+							//go through the vertical angles both above and below the center(-1 for decrement vAngle and below, 1 for increment and above)
+							for(var i=-1; i<2; i+=2){
+								//round the vIndex to a standard value that is mapped on the display
+								var vIndex=trigPrecision*Math.round(referenceIndexes[0]/trigPrecision);
+								//holds whether it is the first iteration of the loop through the vIndexes
+								var firstIteration=true;
+								//get the mid hIndex for the starting point
+								var hIndexMid=hIndex;
+								//hIndexMin holds the lowest hIndex that we hit the previous row. For starts, it is out of range
+								var hIndexMin=hIndexMid+trigPrecision;
+								//hIndexMax holds the highest hIndex that we hit the previous row. For starts, it is out of range
+								var hIndexMax=hIndexMid-trigPrecision;
+								//go up or down while the vIndex is in range
+								while((vIndex>=vIndexStart)&&(vIndex<=vIndexEnd)){
+									//find the new min bound of hIndex and color in the pixels that hit
+									hIndexMin=displayPortion(vIndex, hIndexMid, hIndexMin, -1, plane, commonVar, nonCommonVars);
+									//hIndexMin=displayPortion(vIndex, hIndexEnd-256, hIndexStart+256, -1, plane, commonVar, nonCommonVars);//
+									//hIndexMin=displayPortion(vIndex, 0, 0, -1, plane, commonVar, nonCommonVars);
+									//if it's the first iteration and the angles don't hit the plane, then skip to the next solution
+									//iterations++;
+									if(firstIteration&&(hIndexMin===false)){
+										i=9;
+										//if it hits, increment iterations2
+										//iterations2++;
+										break;
+									}
+									//save that it is no longer the first iteration
+									firstIteration=false;
+									//find the new max bound of hIndex and color in the pixels that hit
+									hIndexMax=displayPortion(vIndex, hIndexMid, hIndexMax, 1, plane, commonVar, nonCommonVars);
+									//hIndexMax=displayPortion(vIndex, 0, 0, 1, plane, commonVar, nonCommonVars);//displayPortion(vIndex, hIndexMid, hIndexMax, 1, plane, commonVar, nonCommonVars);
+									//hIndexMax=displayPortion(vIndex, hIndexStart+256, hIndexEnd-256, 1, plane, commonVar, nonCommonVars);
+									//if no pixels hit, break out of the loop
+									if((hIndexMin===false)&&(hIndexMax===false)){
+										break;
+									}
+									//if the low portion doesn't hit the plane, set the hIndexMin to the previous middle that did hit
+									if(hIndexMin===false){
+										hIndexMin=hIndexMid;
+									}
+									//if the high portion doesn't hit the plane, set the hIndexMax to the previous middle that did hit
+									else if(hIndexMax===false){
+										hIndexMax=hIndexMid;
+									}
+									//if it reaches this point, the solution is valid, so prevent the outer loop from iterating further
+									j=9;
+									//update the next mid index
+									hIndexMid=(hIndexMin+hIndexMax)/2;
+									//increment the vIndex
+									vIndex+=i*trigPrecision;
+								}
+							}
+						}
+					}
+				}
+				//update the canvas with the new pixel data
+				ctx.putImageData(imageData, 0, 0);	
+				//display troubleshooting information
+				document.getElementById("testParagraph").innerHTML="".concat(iterations);//, "<br>", iterations2);
+			}
+			
+			//start the horizontal angle at the center of the previous range
+			//extend outward in one direction while within the valid hIndex range and (within the previous bound or it hits)
+			//returns the last hIndex(rounded) that hits, if none hit return false
+			//if direction is +1, increment hIndex, if -1, decrement hIndex
+			function displayPortion(vIndex, hIndexBegin, hIndexBound, direction, plane, commonVar, nonCommonVars){
+				//calculate the reference vIndex(the row index from the top of the display)
+				var vIndexRef=Math.round((vIndex-vIndexStart)/trigPrecision);
+				//get the number of columns to be displayed in this row specified by vIndexRef
+				var hLength=viewpointsAvailable[vIndexRef].length;
+				//save the hIndexIncrement in this row
+				var hIndexInc=(hIndexEnd-hIndexStart)/hLength;
+				
+				//toTrigs=trigPrecision/degreeIncrement
+				//the possible hIndex values start at half the remainder of the hIndex increment divided by total horizontal degrees converted to an index
+				var hIndexFirst=hIndexInc%(hDegrees*toTrigs)/2;
+				//round the hIndex to a standard value for its row
+				var hIndex=hIndexInc*Math.round((hIndexBegin-hIndexFirst)/hIndexInc)+hIndexFirst;
+				//round this value to an index in the array
+				var hIndexRound=Math.round(hIndex);
+				
+				//calculate the reference hIndex(the column index from the left of the display)
+				var hIndexRef=Math.round((hIndexRound-hIndexStart-hIndexFirst)*hLength/hDegrees/toTrigs);
+				//save the hIndexIncrement
+				var hIndexInc=direction*hIndexInc;
+				//set that no hits have been successful yet by default
+				var lastHitIndex=false;
+				
+				//loop while within the valid hIndex range
+				while((hIndexRound>=hIndexStart)&&(hIndexRound<=hIndexEnd)){
+					iterations++;
+					//see if the viewpoint hits
+					if(tryDisplay(vIndex, hIndexRound, vIndexRef, hIndexRef, plane, commonVar, nonCommonVars)){
+						//if it hits, save the index
+						lastHitIndex=hIndexRound;
+					}
+					//if the viewpoint doesn't hit, see if it is out of bounds
+					else if(direction*hIndexRound-direction*hIndexBound>0){
+						//if it the hIndex is out of range, return the last index hit
+						return lastHitIndex;
+					}
+					//increment the hIndexes
+					hIndex+=hIndexInc;
+					hIndexRef+=direction;
+					hIndexRound=Math.round(hIndex);//Math.round(trigPrecision*Math.round((hIndex-hIndexFirst)/trigPrecision)+hIndexFirst);//Math.round(hIndex);
+				}
+				return lastHitIndex;
+			}
+			
+			//if the viewpoint is hits the plane, return true and display the pixel if the viewpoint isn't taken
+			//otherwise, return false
+			function tryDisplay(vIndex, hIndex, vIndexRef, hIndexRef, plane, commonVar, nonCommonVars){
+				//get the coefficient of the viewpoint
+				var viewCoefficient=viewCoefficients[commonVar](vIndex, hIndex, vViewIndex, hViewIndex);
+				//get the distance from the origin to the plane
+				var distance=plane[0][commonVar]/viewCoefficient;
+				//see if the viewpoint hits the plane in the range
+				if(isHit(vIndex, hIndex, distance, nonCommonVars)){
+					//make sure this viewpoint hasn't been taken already
+					if(viewpointsAvailable[vIndexRef][hIndexRef]){
+						//display the viewpoint
+						//function display(vIndexRef, indexInRow, lighting, colorRGB)
+						display(vIndexRef, hIndexRef, kLight/distance*viewCoefficient, plane[2]);
+						viewpointsAvailable[vIndexRef][hIndexRef]=false;//disable the viewpoint for future planes
+					}
+					return true;
+				}
+				return false;
+			}
+			
+			//returns whether a viewpoint hits the noncommon variables within the range at the distance
+			function isHit(vIndex, hIndex, distance, nonCommonVars){
+				//make sure the distance is positive
+				if(distance>0){
+					//figure out the coordinates where this viewpoint would hit the plane
+					var hit1=distance*viewCoefficients[nonCommonVars[0][0]](vIndex, hIndex, vViewIndex, hViewIndex);
+					var hit2=distance*viewCoefficients[nonCommonVars[1][0]](vIndex, hIndex, vViewIndex, hViewIndex);
+					//if the coordinates are on the plane, return true
+					return (inRange(hit1, nonCommonVars[0][1], nonCommonVars[0][2]))&&(inRange(hit2, nonCommonVars[1][1], nonCommonVars[1][2]));
+				}
+				return false;
+			}
+			
+			//compares the distances from the origin of two planes: a and b
+			//returns negative if plane a is closer, positive if plane a is further, 0 if same distance
+			function planesComparator(a, b){
+				if (a[1]<b[1]){
+					return -1;
+				}
+				if (a[1]>b[1]){
+					return 1;
+				}
+				return 0;
+			}
+			
+			//increments the light constant by inc and prevents negative brightness
+			function incBrightness(inc){
+				var update=kLight+inc;
+				if(update>0.00001){
+					kLight=update;
+				}
+			}
+			
+			//handles keyDown and keyUp events
+			function keyDown(e){
+				updateKeyState(e, 1);
+			}
+			function keyUp(e){
+				updateKeyState(e, 0);
+			}
+			//updates the keysDown array based on the window event and whether it was pressed or released
+			//keyState holds whether the keysDown array should be updated with 0(keyUp) or 1(keyDown)
+			function updateKeyState(e, keyState){
+				//left(37)=a(65), up(38)=w(87), right(39)=d(68), down(40)=s(83), space(32), shift(16)
+				e = e || window.event;
+				//maps the keycodes to their corresponding index in the keysDown array
+				var keyMap=[[37,0],[38,1],[39,2],[40,3],[65,0],[87,1],[68,2],[83,3],[32,4],[16,5]];
+				for(var i=0; i<keyMap.length; i++){
+					if(keyMap[i][0]==e.keyCode){
+						keysDown[keyMap[i][1]]=keyState;
+						//return so this function can only handle one keychange at a time
+						return;
+					}
+				}
+			}
+			
+			//returns a byval copy of a plane
+			function copyPlane(plane){
+				//create the new plane to be returned
+				var returnPlane=[];
+				//cycle through the variables in the old plane
+				for(var i=0; i<plane.length; i++){
+					//create a new variable in the new plane at the index
+					returnPlane[i]=[];
+					//cycle through the variables in the old plane at the index
+					for(var j=0; j<plane[i].length; j++){
+						//set the new plane variable to the old plane variable
+						returnPlane[i][j]=plane[i][j];
+					}
+				}
+				//return the new plane as a copy
+				return returnPlane;
+			}
+			
+			function updatePlanes(){
+				//calculate the x, y, and z positions of the center of each plane instance in sortedPlanes and their total distance from the viewpoint center
+				for(var j=0; j<sortedPlanes.length; j++){
+					//get the index of the plane that sortedPlanes points to
+					var i=sortedPlanes[j][0];
+					//update the center of each variable of the plane
+					sortedPlanes[j][2][0]=(mapPlanes[i][0][0]+mapPlanes[i][1][0])/2+positions[0];
+					sortedPlanes[j][2][1]=(mapPlanes[i][0][1]+mapPlanes[i][1][1])/2+positions[1];
+					sortedPlanes[j][2][2]=(mapPlanes[i][0][2]+mapPlanes[i][1][2])/2+positions[2];
+					//update the distance squared from the viewpoint center
+					sortedPlanes[j][1]=sortedPlanes[j][2][0]*sortedPlanes[j][2][0]+sortedPlanes[j][2][1]*sortedPlanes[j][2][1]+sortedPlanes[j][2][2]*sortedPlanes[j][2][2];
+				}
+			}
+			
+			//adds planes alternating between color1 and color2 within the range [[x1, x2), [y1, y2)...] specified in 2D array ranges
+			function addPlanes(ranges, color1, color2){
+				//create an array for the widths of the planes along each axis
+				var planeWidths=[];
+				//cycle through the 3 axis
+				for(var i=0; i<3; i++){
+					//by default, set the width to 0(common variable)
+					planeWidths[i]=0;
+					//set the width to 1 and decrease the range by 1 if an uncommon variable
+					if(ranges[i][0]!=ranges[i][1]){
+						planeWidths[i]=1;
+						ranges[i][1]--;
+					}
+				}
+				//cycle through the x range
+				for(var x=ranges[0][0]; x<=ranges[0][1]; x++){
+					//cycle through the y range
+					for(var y=ranges[1][0]; y<=ranges[1][1]; y++){
+						//cycle through the z range
+						for(var z=ranges[2][0]; z<=ranges[2][1]; z++){
+							//alternate between the colors and add the plane to the array
+							if((x+y+z)%2==0){
+								mapPlanes.push([[x, y, z],[x+planeWidths[0], y+planeWidths[1], z+planeWidths[2]],color1]);
+							}
+							else{
+								mapPlanes.push([[x, y, z],[x+planeWidths[0], y+planeWidths[1], z+planeWidths[2]],color2]);
+							}
+						}
+					}
+				}
+			}
+		</script>
+	</body>
+</html>

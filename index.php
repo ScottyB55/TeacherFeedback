@@ -55,7 +55,8 @@
             TeacherImageID int NOT NULL AUTO_INCREMENT,
             TeacherID int,
             Link varchar(255),
-            PRIMARY KEY (TeacherImageID)
+            PRIMARY KEY (TeacherImageID),
+	    Caption varchar(1000)
         )");
         sqlExecute("
 	        CREATE TABLE SchoolResponses (
@@ -69,9 +70,10 @@
             SchoolImageID int NOT NULL AUTO_INCREMENT,
             SchoolID int,
             Link varchar(255),
-            PRIMARY KEY (SchoolImageID)
+            PRIMARY KEY (SchoolImageID),
+	    Caption varchar(1000)
         )");
-        // We are missing the Caption column for the Image tables! varchar(1000) works good, as well as default null!
+        // Fixed: missing the Caption column for the Image tables! varchar(1000) works good, as well as default null!
         // Make an uploads file too
         // We can troubleshoot the PHP by echoing, period concatenates strings!
         */

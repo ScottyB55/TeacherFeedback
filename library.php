@@ -62,8 +62,8 @@
 	//if the connection fails, the function echos an error statement and returns null
 	function connect() {
 		$servername = "localhost";
-		$username = "id19377340_scottyee23";//"id3785816_user";//use this username to login to the database
-		$password = "LargeBarge!1";//"computers123";//use this password to login to the database
+		$username = "root";//"id3785816_user";//use this username to login to the database
+		$password = "ZHA6nx4EbPzP";//"computers123";//use this password to login to the database
 		$database = "id19377340_teacherfeedbackdb";//"id3785816_db";
 		try {//try to setup the connection
 			//set up connection
